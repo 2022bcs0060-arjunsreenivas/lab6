@@ -63,30 +63,34 @@ pipeline {
         // =========================
         stage('Compare Accuracy') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'best-accuracy', variable: 'BEST_ACCURACY')
-                ]) {
-                    script {
-                        echo "Best Accuracy: ${BEST_ACCURACY}"
+                script {
 
-                        def isBetter = sh(
-                            script: """
-                                if (( \$(echo "${CUR_ACCURACY} <= ${BEST_ACCURACY}" | bc -l) )); then
-                                    echo "false"
-                                else
-                                    echo "true"
-                                fi
-                            """,
-                            returnStdout: true
-                        ).trim()
-
-                        env.DEPLOY = isBetter
-                        echo "Deploy decision: ${env.DEPLOY}"
+                    if (!fileExists('best_accuracy.txt')) {
+                        echo "No previous best accuracy found. Creating one."
+                        writeFile file: 'best_accuracy.txt', text: "0.0"
                     }
+
+                    def BEST_ACCURACY = readFile('best_accuracy.txt').trim()
+
+                    echo "Current Accuracy: ${env.CUR_ACCURACY}"
+                    echo "Best Accuracy: ${BEST_ACCURACY}"
+
+                    def isBetter = sh(
+                        script: """
+                            if (( \$(echo "${CUR_ACCURACY} <= ${BEST_ACCURACY}" | bc -l) )); then
+                                echo "false"
+                            else
+                                echo "true"
+                            fi
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    env.DEPLOY = isBetter
+                    echo "Deploy decision: ${env.DEPLOY}"
                 }
             }
         }
-
 
         // =========================
         // STAGE 6: BUILD & PUSH DOCKER
@@ -122,47 +126,11 @@ pipeline {
             }
             steps {
                 script {
-                    echo "Updating best-accuracy credential to ${env.CUR_ACCURACY}"
-
-                    import jenkins.model.*
-                    import com.cloudbees.plugins.credentials.*
-                    import com.cloudbees.plugins.credentials.domains.*
-                    import org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl
-                    import hudson.util.Secret
-
-                    def store = Jenkins.instance
-                        .getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0]
-                        .getStore()
-
-                    def existing = CredentialsProvider.lookupCredentials(
-                        com.cloudbees.plugins.credentials.common.StandardCredentials.class,
-                        Jenkins.instance,
-                        null,
-                        null
-                    ).find { it.id == "best-accuracy" }
-
-                    if (existing != null) {
-                        def newCredential = new StringCredentialsImpl(
-                            existing.scope,
-                            "best-accuracy",
-                            "Best Accuracy Score",
-                            Secret.fromString(env.CUR_ACCURACY)
-                        )
-
-                        store.updateCredentials(
-                            Domain.global(),
-                            existing,
-                            newCredential
-                        )
-
-                        echo "best-accuracy updated successfully!"
-                    } else {
-                        error("Credential best-accuracy not found.")
-                    }
+                    writeFile file: 'best_accuracy.txt', text: env.CUR_ACCURACY
+                    echo "Best accuracy updated to ${env.CUR_ACCURACY}"
                 }
             }
         }
-
 
     }
 
@@ -171,7 +139,7 @@ pipeline {
     // =========================
     post {
         always {
-            archiveArtifacts artifacts: 'output/**', fingerprint: true
+            archiveArtifacts artifacts: 'output/**, best_accuracy.txt', fingerprint: true
         }
 
         success {
