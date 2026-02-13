@@ -9,7 +9,7 @@ pipeline {
     stages {
 
         // =========================
-        // STAGE 1: CHECKOUT
+        // 1. CHECKOUT
         // =========================
         stage('Checkout') {
             steps {
@@ -18,9 +18,9 @@ pipeline {
         }
 
         // =========================
-        // STAGE 2: SETUP PYTHON
+        // 2. SETUP PYTHON
         // =========================
-        stage('Setup Python Environment') {
+        stage('Setup Python') {
             steps {
                 sh '''
                     python3 -m venv $PYTHON_ENV
@@ -32,7 +32,7 @@ pipeline {
         }
 
         // =========================
-        // STAGE 3: TRAIN MODEL
+        // 3. TRAIN MODEL
         // =========================
         stage('Train Model') {
             steps {
@@ -44,56 +44,57 @@ pipeline {
         }
 
         // =========================
-        // STAGE 4: READ ACCURACY
+        // 4. READ METRICS
         // =========================
-        stage('Read Accuracy') {
+        stage('Read Metrics') {
             steps {
                 script {
-                    def metrics = readJSON file: "output/metrics.json"
-                    env.CUR_ACCURACY = metrics.Accuracy.toString()
+                    def metrics = readJSON file: "${OUTPUT_DIR}/metrics.json"
 
-                    echo "Current Accuracy: ${env.CUR_ACCURACY}"
+                    env.CUR_R2  = metrics.R2_Score.toString()
+                    env.CUR_MSE = metrics.MSE.toString()
+
+                    echo "Current R2 Score: ${env.CUR_R2}"
+                    echo "Current MSE: ${env.CUR_MSE}"
                 }
             }
         }
 
-
         // =========================
-        // STAGE 5: COMPARE METRICS
+        // 5. COMPARE METRICS
         // =========================
-        stage('Compare Accuracy') {
+        stage('Compare Metrics') {
             steps {
-                script {
+                withCredentials([
+                    string(credentialsId: 'best-r2-score', variable: 'BEST_R2'),
+                    string(credentialsId: 'best-mse', variable: 'BEST_MSE')
+                ]) {
+                    script {
 
-                    if (!fileExists('best_accuracy.txt')) {
-                        echo "No previous best accuracy found. Creating one."
-                        writeFile file: 'best_accuracy.txt', text: "0.0"
+                        echo "Best R2 Score: ${BEST_R2}"
+                        echo "Best MSE: ${BEST_MSE}"
+
+                        def decision = sh(
+                            script: """
+                                if (( \$(echo "${CUR_R2} <= ${BEST_R2}" | bc -l) )) || \
+                                   (( \$(echo "${CUR_MSE} >= ${BEST_MSE}" | bc -l) )); then
+                                    echo "false"
+                                else
+                                    echo "true"
+                                fi
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        env.DEPLOY = decision
+                        echo "Deploy decision: ${env.DEPLOY}"
                     }
-
-                    def BEST_ACCURACY = readFile('best_accuracy.txt').trim()
-
-                    echo "Current Accuracy: ${env.CUR_ACCURACY}"
-                    echo "Best Accuracy: ${BEST_ACCURACY}"
-
-                    def isBetter = sh(
-                        script: """
-                            if (( \$(echo "${CUR_ACCURACY} <= ${BEST_ACCURACY}" | bc -l) )); then
-                                echo "false"
-                            else
-                                echo "true"
-                            fi
-                        """,
-                        returnStdout: true
-                    ).trim()
-
-                    env.DEPLOY = isBetter
-                    echo "Deploy decision: ${env.DEPLOY}"
                 }
             }
         }
 
         // =========================
-        // STAGE 6: BUILD & PUSH DOCKER
+        // 6. BUILD & PUSH DOCKER
         // =========================
         stage('Build & Push Docker Image') {
             when {
@@ -107,31 +108,18 @@ pipeline {
                 )]) {
                     sh '''
                         echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+
                         IMAGE=$DOCKER_USER/ml-model:${BUILD_NUMBER}
+
                         docker build -t $IMAGE .
                         docker tag $IMAGE $DOCKER_USER/ml-model:latest
+
                         docker push $IMAGE
                         docker push $DOCKER_USER/ml-model:latest
                     '''
                 }
             }
         }
-
-        // =========================
-        // STAGE 7: UPDATE BEST METRICS
-        // =========================
-        stage('Update Best Accuracy') {
-            when {
-                expression { env.DEPLOY == 'true' }
-            }
-            steps {
-                script {
-                    writeFile file: 'best_accuracy.txt', text: env.CUR_ACCURACY
-                    echo "Best accuracy updated to ${env.CUR_ACCURACY}"
-                }
-            }
-        }
-
     }
 
     // =========================
@@ -139,7 +127,7 @@ pipeline {
     // =========================
     post {
         always {
-            archiveArtifacts artifacts: 'output/**, best_accuracy.txt', fingerprint: true
+            archiveArtifacts artifacts: 'output/**', fingerprint: true
         }
 
         success {
