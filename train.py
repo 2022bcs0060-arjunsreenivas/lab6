@@ -16,7 +16,7 @@ y = data['quality']
 
 X_train,X_test,y_train,y_test = train_test_split(X,y,test_size=0.2, random_state=1234)
 
-model = LinearRegression()
+model = RandomForestRegressor(n_estimators=10)
 model.fit(X_train,y_train)
 
 pred = model.predict(X_test)
